@@ -73,6 +73,8 @@ class MADDPGAlgorithm:
 
 class MAPPOAlgorithm:
     def __init__(self, env: EnvBase, device: torch.device, config: dict):
+        if config.get("replay_buffer", {}).get("sampling_strategy", "uniform") != "uniform":
+            raise ValueError("MAPPO does not use replay; replay_buffer.sampling_strategy must be 'uniform'.")
         if config["flex_encoder"]["enabled"]:
             raise ValueError("MAPPO requires flex_encoder.enabled to be false.")
         self.config = config

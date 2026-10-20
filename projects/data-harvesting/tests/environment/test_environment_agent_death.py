@@ -76,6 +76,32 @@ def _zero_action(env) -> torch.Tensor:
     return torch.zeros((env.max_num_agents, 2), dtype=torch.float32, device=env.device)
 
 
+def test_initial_team_size_is_updated_only_on_episode_reset(monkeypatch) -> None:
+    import random
+
+    original_randint = random.randint
+    requested_size = 2
+    monkeypatch.setattr(
+        random,
+        "randint",
+        lambda lower, upper: requested_size if (lower, upper) == (1, 3) else original_randint(lower, upper),
+    )
+    env = make_data_collection_env(_death_config(min_num_agents=1, max_num_agents=3))
+    try:
+        td = env.reset()
+        assert td["initial_team_size"].item() == 2
+        td.set(("agents", "action"), _zero_action(env))
+        after_death = env.step(td)["next"]
+        assert after_death["agents", "mask"].sum().item() == 1
+        assert after_death["initial_team_size"].item() == 2
+        requested_size = 3
+        reset = env.reset()
+        assert reset["initial_team_size"].item() == 3
+        assert reset["agents", "mask"].sum().item() == 3
+    finally:
+        env.close()
+
+
 def test_death_step_terminates_only_the_dying_agent_and_keeps_episode_running() -> None:
     env = make_data_collection_env(_death_config())
     try:
@@ -89,6 +115,8 @@ def test_death_step_terminates_only_the_dying_agent_and_keeps_episode_running() 
         td.set(("agents", "action"), _zero_action(env))
         next_td = env.step(td).get("next")
 
+        assert td["initial_team_size"].item() == 2
+        assert next_td["initial_team_size"].item() == 2
         assert env.episode_agents[0].exists is True
         assert env.episode_agents[0].active is False
         assert env.episode_agents[1].active is True
@@ -139,6 +167,7 @@ def test_dead_agent_becomes_truncated_bookkeeping_on_later_steps() -> None:
         next_td = env.step(td).get("next")
 
         assert next_td.get(("agents", "mask")).tolist() == [False, True]
+        assert next_td["initial_team_size"].item() == 2
         assert next_td.get(("agents", "done"))[:, 0].tolist() == [True, False]
         assert next_td.get(("agents", "terminated"))[:, 0].tolist() == [False, False]
         assert next_td.get(("agents", "truncated"))[:, 0].tolist() == [True, False]

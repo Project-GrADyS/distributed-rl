@@ -96,9 +96,16 @@ collector:
   device: cpu
 
 replay_buffer:
+  # uniform: existing transition-uniform replay. initial_team_size: choose a
+  # nonempty initial-team-size bucket uniformly, then sample with replacement.
+  # Bucketed replay is MADDPG-only; pair with agent_count_sampling: uniform
+  # for the bucketed-replay baseline. Collection sampling stays independent.
+  sampling_strategy: uniform
   # Size of the replay buffer (number of transitions it can store).
+  # Bucketed mode divides this total across all configured team sizes.
   buffer_size: 3000000
   # Number of batches to prefetch asynchronously (0 disables prefetching).
+  # Bucketed mode samples on demand and ignores this option.
   prefetch: 32
   # Device to store the buffer on ("cpu" or "cuda").
   buffer_device: cpu

@@ -279,6 +279,8 @@ class DataCollectionEnvironment(BaseGrADySEnvironment, EnvBase):
 
         observation_spec = Composite(
             {
+                # Episode provenance for replay; never part of policy inputs.
+                "initial_team_size": Unbounded(shape=(1,), dtype=torch.int64, device=device),
                 "agents": Composite(
                     {
                         "observation": Composite(obs_inner, device=device),
@@ -686,6 +688,7 @@ class DataCollectionEnvironment(BaseGrADySEnvironment, EnvBase):
             td (TensorDictBase): The tensordict to fill with observations.
             observation_dict (Optional[dict]): Precomputed observations.
         """
+        td.get("initial_team_size").fill_(len(self._existing_episode_agents()))
         agents_td = td.get("agents")
         obs_td = agents_td.get("observation")
 

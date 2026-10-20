@@ -52,6 +52,45 @@ project. The default MLflow tracking location is
 Older MLflow policies saved as pickled full modules before the `flex-marl`
 migration are not compatible with this project layout.
 
+## Initial-team-size bucketed replay
+
+To run the additional MADDPG "Alarcon Granadeno et al. (2025)" baseline, copy `params.yaml` and set:
+
+```yaml
+environment:
+  agent_count_sampling: uniform
+replay_buffer:
+  sampling_strategy: initial_team_size
+```
+
+These are overrides to the full configuration, not a standalone config. Launch
+with `main.py --params <PATH>` using the command above. Omitting
+`sampling_strategy` (or setting it to `uniform`) retains transition-uniform
+replay. Initial-team collection sampling (`uniform` or `inverse`) is independent
+of replay sampling; the bucketed baseline pairs uniform collection with bucketed
+replay.
+
+Each update selects one nonempty bucket uniformly, then draws the whole
+minibatch from it uniformly with replacement. A bucket becomes eligible after
+its first transition; empty buckets are skipped, and sampling an entirely empty
+buffer raises an error. This matches the existing replay's lack of a separate
+warmup threshold and ability to sample batches larger than the stored data.
+The `initial_team_size` metadata is recorded at reset and stays unchanged after
+deaths, across collection batches, and through replay.
+
+`buffer_size` remains the total transition capacity. It is divided equally
+across all configured team sizes, with any remainder assigned to the smallest
+sizes. Each bucket evicts its own oldest transitions; unused bucket capacity is
+reserved, not borrowed. The budget must allow at least one transition per team
+size. Bucketed replay samples on demand and ignores `prefetch`, avoiding a queue
+per bucket. Storage and sample devices follow the existing settings.
+
+This adapts the replay sampling described by [Alarcon Granadeno et al. (2025)](https://doi.org/10.1016/j.mlwa.2025.100737).
+The existing joint-transition minibatches, active-agent masking, actor/value
+losses, and optimizer updates are unchanged; it does not implement their
+single-host-agent update or reproduce ADDRQN. MAPPO does not use replay and
+rejects the bucketed option.
+
 ## Notebook analysis
 
 `data_harvesting.analysis` provides a pandas-oriented interface for inspecting

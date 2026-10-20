@@ -8,7 +8,7 @@ environment:
   # Sampling strategy for the number of agents in each episode. Options:
   # uniform: Sample agent counts uniformly from the range [min_num_agents, max_num_agents].
   # inverese: Sample agent counts with probability proportional to 1 / n so each count contributes similar actor exposure.
-  agent_count_sampling: inverse
+  agent_count_sampling: uniform
   # Minimum number of sensor nodes in the simulation.
   min_num_sensors: 1
   # Maximum number of sensor nodes in the simulation.
@@ -44,16 +44,16 @@ environment:
   # scheduled: causes one random active-agent death per matching timestep entry.
   death_scheduler:
     type: stochastic
-    probability: 0.002
+    probability: 0.0005
   # If true, a death scheduler cannot remove the final active agent in an episode.
   prevent_last_agent_death: true
 actor:
   # All actor networks will share the same parameters if true.
   share_parameters: true
   # Network depth (number of hidden layers).
-  network_depth: 3
+  network_depth: 2
   # Network width (number of neurons per hidden layer).
-  network_width: 128
+  network_width: 256
   # Activation function for hidden layers. Options: "Tanh", "ReLU", "LeakyReLU".
   activation_function: Tanh
   # Whether to use a centralized policy (for multi-agent setups).
@@ -75,7 +75,7 @@ training:
 
 critic:
   # Number of hidden layers in the critic MLP.
-  network_depth: 3
+  network_depth: 2
   # Number of neurons per hidden layer.
   network_width: 512
   # Activation function for hidden layers. Options: "Tanh", "ReLU", "LeakyReLU".
@@ -100,7 +100,7 @@ replay_buffer:
   # nonempty initial-team-size bucket uniformly, then sample with replacement.
   # Bucketed replay is MADDPG-only; pair with agent_count_sampling: uniform
   # for the bucketed-replay baseline. Collection sampling stays independent.
-  sampling_strategy: uniform
+  sampling_strategy: initial_team_size
   # Size of the replay buffer (number of transitions it can store).
   # Bucketed mode divides this total across all configured team sizes.
   buffer_size: 3000000

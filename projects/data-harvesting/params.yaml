@@ -2,13 +2,13 @@ environment:
   # Time between iterations of the algorithm in seconds. Agents will make observations and take actions at this interval.
   algorithm_iteration_interval: 2.0
   # Minimum number of drones in the simulation.
-  min_num_agents: 1
+  min_num_agents: 5
   # Maximum number of drones in the simulation.
-  max_num_agents: 8
+  max_num_agents: 5
   # Sampling strategy for the number of agents in each episode. Options:
   # uniform: Sample agent counts uniformly from the range [min_num_agents, max_num_agents].
   # inverese: Sample agent counts with probability proportional to 1 / n so each count contributes similar actor exposure.
-  agent_count_sampling: uniform
+  agent_count_sampling: inverse
   # Minimum number of sensor nodes in the simulation.
   min_num_sensors: 1
   # Maximum number of sensor nodes in the simulation.
@@ -44,7 +44,7 @@ environment:
   # scheduled: causes one random active-agent death per matching timestep entry.
   death_scheduler:
     type: stochastic
-    probability: 0.0005
+    probability: 0.0
   # If true, a death scheduler cannot remove the final active agent in an episode.
   prevent_last_agent_death: true
 actor:
@@ -100,7 +100,7 @@ replay_buffer:
   # nonempty initial-team-size bucket uniformly, then sample with replacement.
   # Bucketed replay is MADDPG-only; pair with agent_count_sampling: uniform
   # for the bucketed-replay baseline. Collection sampling stays independent.
-  sampling_strategy: initial_team_size
+  sampling_strategy: uniform
   # Size of the replay buffer (number of transitions it can store).
   # Bucketed mode divides this total across all configured team sizes.
   buffer_size: 3000000

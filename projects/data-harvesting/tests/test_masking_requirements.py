@@ -367,20 +367,66 @@ def test_masked_mlp_smaller_population_matches_inactive_slots(
     torch.testing.assert_close(actual, expected)
 
 
-def test_masked_mlp_rejects_population_above_trained_capacity() -> None:
+@pytest.mark.parametrize("population", [9, 16, 20])
+@pytest.mark.parametrize("batch_shape", [(), (2, 3)])
+def test_shared_decentralized_mlp_larger_population_matches_independent_inference(
+    population: int,
+    batch_shape: tuple[int, ...],
+) -> None:
+    network_kwargs = {
+        "n_agent_inputs": 5,
+        "n_agent_outputs": 2,
+        "centralized": False,
+        "share_params": True,
+        "depth": 1,
+        "num_cells": 16,
+    }
+    module = MaskedMultiAgentMLP(MultiAgentMLP(n_agents=8, **network_kwargs))
+    single_agent_mlp = MultiAgentMLP(n_agents=1, **network_kwargs)
+    original_state = {
+        key: value.clone() for key, value in module.mlp.state_dict().items()
+    }
+    single_agent_mlp.load_state_dict(original_state)
+    inputs = torch.randn(*batch_shape, population, 5, requires_grad=True)
+    mask = torch.ones(*batch_shape, population, dtype=torch.bool)
+    mask[..., ::3] = False
+    mask[..., 8:16] = False
+    masked_inputs = inputs.masked_fill(~mask.unsqueeze(-1), -1.0)
+
+    # Treat each agent as a separate batch element of the same one-agent network.
+    expected = single_agent_mlp(masked_inputs.unsqueeze(-2)).squeeze(-2)
+    actual = module(inputs, mask)
+
+    assert actual.shape == (*batch_shape, population, 2)
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    torch.testing.assert_close(inputs.grad[~mask], torch.zeros_like(inputs.grad[~mask]))
+    assert torch.count_nonzero(inputs.grad[mask]) > 0
+    assert module.mlp.n_agents == 8
+    for key, value in module.mlp.state_dict().items():
+        torch.testing.assert_close(value, original_state[key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("centralized,share_params", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("population", [9, 16, 20])
+def test_masked_mlp_rejects_population_above_trained_capacity(
+    centralized: bool,
+    share_params: bool,
+    population: int,
+) -> None:
     module = MaskedMultiAgentMLP(
         MultiAgentMLP(
             n_agent_inputs=5,
             n_agent_outputs=2,
             n_agents=8,
-            centralized=False,
-            share_params=True,
+            centralized=centralized,
+            share_params=share_params,
             depth=1,
             num_cells=16,
         )
     )
     with pytest.raises(ValueError, match="shape\\[-2\\]=8"):
-        module(torch.zeros(9, 5), torch.ones(9, dtype=torch.bool))
+        module(torch.zeros(population, 5), torch.ones(population, dtype=torch.bool))
 
 
 def test_centralized_mlp_critic_ignores_inactive_observations_and_actions() -> None:

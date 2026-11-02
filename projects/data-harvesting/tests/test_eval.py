@@ -113,8 +113,8 @@ def test_parallel_eval_matches_serial_seeded_episodes() -> None:
     assert parallel == serial
 
 
-@pytest.mark.parametrize("population", [1, 4, 8])
-def test_eval_saved_mlp_with_smaller_population(population: int) -> None:
+@pytest.mark.parametrize("population", [1, 4, 8, 9, 16, 20])
+def test_eval_saved_mlp_with_different_population(population: int) -> None:
     config = _eval_config()
     config["flex_encoder"]["enabled"] = False
     config["actor"] = {

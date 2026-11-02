@@ -33,7 +33,11 @@ class _TensorDictEncoderRouter(nn.Module):
 
 
 class MaskedMultiAgentMLP(nn.Module):
-    """Pad inactive and missing agent slots to the MLP's trained capacity."""
+    """Mask agent inputs and adapt populations for a fixed-slot MLP.
+
+    Shared, decentralized networks can process larger populations in independent
+    chunks. Centralized and per-agent networks retain their trained capacity.
+    """
 
     padding_value = -1.0
 
@@ -50,17 +54,33 @@ class MaskedMultiAgentMLP(nn.Module):
             ~agent_mask.unsqueeze(-1),
             self.padding_value,
         )
+        if (
+            inputs.shape[-2] > self.mlp.n_agents
+            and self.mlp.share_params
+            and not self.mlp.centralized
+        ):
+            return torch.cat(
+                [
+                    self._forward_padded(chunk)
+                    for chunk in padded_inputs.split(self.mlp.n_agents, dim=-2)
+                ],
+                dim=-2,
+            )
+        return self._forward_padded(padded_inputs)
+
+    def _forward_padded(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Run one population chunk using the network's original slot count."""
         num_agents = inputs.shape[-2]
         missing_agents = self.mlp.n_agents - num_agents
         if missing_agents > 0:
-            padded_inputs = torch.nn.functional.pad(
-                padded_inputs,
+            inputs = torch.nn.functional.pad(
+                inputs,
                 (0, 0, 0, missing_agents),
                 value=self.padding_value,
             )
         # Keep the network's fixed slot count, but match the caller's agent axis.
-        # Populations above capacity still fail the underlying MLP's shape check.
-        return self.mlp(padded_inputs)[..., :num_agents, :]
+        # Unsupported populations still fail the underlying MLP's shape check.
+        return self.mlp(inputs)[..., :num_agents, :]
 
 
 def _encoder_mode(network_config: Mapping[str, Any]) -> MultiAgentMode:

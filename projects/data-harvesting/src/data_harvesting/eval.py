@@ -23,6 +23,7 @@ from data_harvesting.environment import (
     make_env,
     make_metrics_spec,
 )
+from data_harvesting.utils import _FasterTanhDelta, collapse_shared_action_bound
 
 
 @dataclass(frozen=True)
@@ -318,7 +319,7 @@ def list_policy_models_from_mlflow_run(
 
 
 def _repair_legacy_probabilistic_modules(policy):
-    """Populate generator fields absent from older pickled TensorDict modules."""
+    """Repair older pickled modules and remove repeated agent action bounds."""
 
     modules = policy.modules() if hasattr(policy, "modules") else ()
     for module in modules:
@@ -328,6 +329,13 @@ def _repair_legacy_probabilistic_modules(policy):
             module._generator = None
         if not hasattr(module, "_generator_key"):
             module._generator_key = None
+        distribution_class = module.distribution_class
+        if isinstance(distribution_class, type) and issubclass(distribution_class, _FasterTanhDelta):
+            for key in ("low", "high"):
+                if key in module.distribution_kwargs:
+                    module.distribution_kwargs[key] = collapse_shared_action_bound(
+                        module.distribution_kwargs[key]
+                    )
     return policy
 
 

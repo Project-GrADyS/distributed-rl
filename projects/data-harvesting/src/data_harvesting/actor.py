@@ -11,7 +11,7 @@ from torchrl.modules import (
 from torchrl.modules.distributions import TanhNormal
 from data_harvesting.encoding import MaskedMultiAgentMLP, make_flex_encoder_module
 from data_harvesting.environment import requires_masking
-from data_harvesting.utils import get_faster_tanh_delta, get_activation_class
+from data_harvesting.utils import collapse_shared_action_bound, get_faster_tanh_delta, get_activation_class
 
 def create_mlp_module(env: EnvBase, config: Dict[str, Any], device: torch.device) -> TensorDictModule:
     activation_class = get_activation_class(config["actor"]["activation_function"])
@@ -69,8 +69,13 @@ def create_actor(
         else create_mlp_module(env, config, device)
     )
 
-    high = env.full_action_spec_unbatched["agents", "action"].space.high.to(device)
-    low = env.full_action_spec_unbatched["agents", "action"].space.low.to(device)
+    # Shared limits broadcast over agent slots; the full spec retains the slot count.
+    high = collapse_shared_action_bound(
+        env.full_action_spec_unbatched["agents", "action"].space.high.to(device)
+    )
+    low = collapse_shared_action_bound(
+        env.full_action_spec_unbatched["agents", "action"].space.low.to(device)
+    )
 
     policy = ProbabilisticActor(
         module=policy_module,

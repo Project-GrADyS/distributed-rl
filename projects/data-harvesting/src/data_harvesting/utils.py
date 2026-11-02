@@ -6,6 +6,15 @@ from torchrl.modules.distributions.continuous import (
 from numbers import Number
 
 
+def collapse_shared_action_bound(bound: torch.Tensor | float) -> torch.Tensor | float:
+    """Remove repeated agent rows, preserving bounds that differ between agents."""
+    if isinstance(bound, torch.Tensor) and bound.ndim == 2 and bound.shape[0] > 0:
+        per_action = bound[0]
+        if torch.equal(bound, per_action.expand_as(bound)):
+            return per_action.clone()
+    return bound
+
+
 def get_activation_class(name):
     if name == "Tanh":
         return torch.nn.Tanh

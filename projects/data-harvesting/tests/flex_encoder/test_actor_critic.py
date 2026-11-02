@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import pytest
 import torch
 from flex_marl import MultiAgentEncoderModule
@@ -5,6 +7,8 @@ from flex_marl import MultiAgentEncoderModule
 from data_harvesting.actor import create_actor
 from data_harvesting.critic import create_critic
 from data_harvesting.environment.data_collection import make_data_collection_env
+from data_harvesting.eval import eval as run_eval
+from data_harvesting.eval import load_policy_from_model_id
 
 
 def _base_config() -> dict:
@@ -141,6 +145,84 @@ def test_flex_actor_outputs_shape_bounds_and_device(actor_mode: str) -> None:
         assert torch.all(action <= 1.0)
     finally:
         env.close()
+
+
+@pytest.fixture(params=[False, True], ids=["new", "legacy"])
+def population_actor(request, monkeypatch):
+    config = _base_config()
+    config["environment"].update(min_num_agents=1, max_num_agents=8)
+    # Match compiled policies' validation settings without paying compilation cost.
+    # Uncompiled encoders enforce their configured slot count before inference.
+    config["flex_encoder"]["compile"] = True
+    monkeypatch.setattr(torch, "compile", lambda module: module)
+    env = make_data_collection_env(config)
+    try:
+        actor = create_actor(env, torch.device("cpu"), config).eval()
+        if request.param:
+            # Recreate the bounds embedded in policies saved before this fix.
+            action_spec = env.full_action_spec_unbatched["agents", "action"]
+            actor[-1].distribution_kwargs.update(
+                low=action_spec.space.low.clone(),
+                high=action_spec.space.high.clone(),
+            )
+            td = env.reset(seed=0)
+            with torch.no_grad():
+                original_actions = actor(td.clone())["agents", "action"]
+            buffer = BytesIO()
+            torch.save(actor, buffer)
+            buffer.seek(0)
+            restored = torch.load(buffer, weights_only=False)
+            monkeypatch.setattr(
+                "data_harvesting.eval.mlflow_pytorch.load_model",
+                lambda uri: restored,
+            )
+            actor = load_policy_from_model_id("legacy-population-model")
+            with torch.no_grad():
+                repaired_actions = actor(td.clone())["agents", "action"]
+            torch.testing.assert_close(repaired_actions, original_actions, rtol=0, atol=0)
+        return actor
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("population", [1, 2, 8, 9, 20])
+def test_flex_actor_accepts_different_population(population_actor, population: int) -> None:
+    config = _base_config()
+    config["environment"].update(min_num_agents=population, max_num_agents=population)
+    env = make_data_collection_env(config)
+    try:
+        assert population_actor[-1].distribution_kwargs["low"].shape == (2,)
+        assert population_actor[-1].distribution_kwargs["high"].shape == (2,)
+        # The full actor spec still describes its original eight-slot environment.
+        assert population_actor.spec["agents", "action"].shape == (8, 2)
+        td = env.reset(seed=0)
+        for policy_input in (td.clone(), td.clone().unsqueeze(0).expand(3).clone()):
+            with torch.no_grad():
+                action = population_actor(policy_input)["agents", "action"]
+            assert action.shape == (*policy_input.batch_size, population, 2)
+            assert torch.isfinite(action).all()
+            assert (action >= 0).all() and (action <= 1).all()
+            assert env.full_action_spec_unbatched["agents", "action"].is_in(action)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("population", [2, 20])
+@pytest.mark.parametrize("num_workers", [1, 2])
+def test_eval_flex_actor_with_different_population(
+    population_actor, population: int, num_workers: int,
+) -> None:
+    config = _base_config()
+    config["environment"].update(
+        min_num_agents=population,
+        max_num_agents=population,
+        max_episode_length=3,
+        max_seconds_stalled=1,
+    )
+    result = run_eval(population_actor, config, num_runs=2, seed=100, num_workers=num_workers)
+
+    assert result["num_runs"] == 2
+    assert [row["num_agents"] for row in result["episodes"]] == [population, population]
 
 
 @pytest.mark.parametrize("critic_mode", ["shared", "per_agent", "centralized"])

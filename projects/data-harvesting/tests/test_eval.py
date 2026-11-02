@@ -1,4 +1,5 @@
 from functools import partial
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,8 @@ from tensordict.nn import (
 )
 from torch import nn
 
+from data_harvesting.actor import create_actor
+from data_harvesting.environment import make_env
 from data_harvesting.eval import eval as run_eval
 from data_harvesting.eval import list_policy_models_from_mlflow_run
 from data_harvesting.eval import load_config_from_mlflow_run
@@ -108,6 +111,40 @@ def test_parallel_eval_matches_serial_seeded_episodes() -> None:
     )
 
     assert parallel == serial
+
+
+@pytest.mark.parametrize("population", [1, 4, 8])
+def test_eval_saved_mlp_with_smaller_population(population: int) -> None:
+    config = _eval_config()
+    config["flex_encoder"]["enabled"] = False
+    config["actor"] = {
+        "share_parameters": True,
+        "centralized": False,
+        "network_depth": 1,
+        "network_width": 16,
+        "activation_function": "Tanh",
+    }
+    config["environment"].update(min_num_agents=1, max_num_agents=8)
+    env = make_env(config)
+    try:
+        actor = create_actor(env, torch.device("cpu"), config)
+        buffer = BytesIO()
+        torch.save(actor, buffer)
+        buffer.seek(0)
+        actor = torch.load(buffer, weights_only=False)
+    finally:
+        env.close()
+
+    config["environment"].update(
+        min_num_agents=population,
+        max_num_agents=population,
+    )
+    serial = run_eval(actor, config, num_runs=2, seed=200, num_workers=1)
+    parallel = run_eval(actor, config, num_runs=2, seed=200, num_workers=2)
+
+    assert parallel == serial
+    assert [row["num_agents"] for row in serial["episodes"]] == [population] * 2
+    assert actor.module[0].module.mlp.n_agents == 8
 
 
 @pytest.mark.parametrize("num_workers", [0, -1])

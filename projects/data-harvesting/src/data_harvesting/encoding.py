@@ -33,7 +33,7 @@ class _TensorDictEncoderRouter(nn.Module):
 
 
 class MaskedMultiAgentMLP(nn.Module):
-    """Apply fixed padding to inactive agent slots before an MLP forward pass."""
+    """Pad inactive and missing agent slots to the MLP's trained capacity."""
 
     padding_value = -1.0
 
@@ -50,7 +50,17 @@ class MaskedMultiAgentMLP(nn.Module):
             ~agent_mask.unsqueeze(-1),
             self.padding_value,
         )
-        return self.mlp(padded_inputs)
+        num_agents = inputs.shape[-2]
+        missing_agents = self.mlp.n_agents - num_agents
+        if missing_agents > 0:
+            padded_inputs = torch.nn.functional.pad(
+                padded_inputs,
+                (0, 0, 0, missing_agents),
+                value=self.padding_value,
+            )
+        # Keep the network's fixed slot count, but match the caller's agent axis.
+        # Populations above capacity still fail the underlying MLP's shape check.
+        return self.mlp(padded_inputs)[..., :num_agents, :]
 
 
 def _encoder_mode(network_config: Mapping[str, Any]) -> MultiAgentMode:

@@ -350,18 +350,18 @@ def load_policy_from_mlflow_run(
 
     model_id = _resolve_model_id_from_run(run_id, model_name=model_name)
     model_uri = f"models:/{model_id}"
-    policy = _repair_legacy_probabilistic_modules(
-        mlflow_pytorch.load_model(model_uri)
-    )
+    policy = load_policy_from_uri(model_uri)
     return policy, model_id
 
 
 def load_policy_from_model_id(model_id: str, *, tracking_uri: str | None = None):
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
-    return _repair_legacy_probabilistic_modules(
-        mlflow_pytorch.load_model(f"models:/{model_id}")
-    )
+    return load_policy_from_uri(f"models:/{model_id}")
+
+
+def load_policy_from_uri(model_uri: str):
+    return _repair_legacy_probabilistic_modules(mlflow_pytorch.load_model(model_uri))
 
 
 def _episode_row(episode_info, *, run_index: int, metrics_spec) -> dict[str, Any]:

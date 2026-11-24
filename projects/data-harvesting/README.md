@@ -130,3 +130,23 @@ logged metric step and marked with `step_inferred=True`.
 
 A clean starter notebook is available at
 `analysis/mlflow_analysis.ipynb`.
+
+To save a run for offline analysis, export it once while connected to MLflow:
+
+```python
+run.export("paper-runs/6_mlp")
+```
+
+Copy the entire directory to the analysis machine and open it in the same
+Python environment:
+
+```python
+run = ExperimentRun.from_directory("paper-runs/6_mlp")
+history = run.metrics("eval/all_collected")
+episodes = run.final_model().evaluate(100, seed=1000)
+```
+
+The destination must be a new directory. Each export includes the original
+logged configuration parameters, all metric histories, and all logged models,
+including numbered checkpoints accessible through `run.checkpoint(step)`.
+The directory can be moved or zipped and unpacked before opening it.

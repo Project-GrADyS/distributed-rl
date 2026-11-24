@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 import ast
+import csv
+import json
+import shutil
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import cached_property
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import mlflow
 from mlflow import MlflowClient
+from mlflow.entities import Metric, Run
 import pandas as pd
 
 from data_harvesting.eval import _logged_policy_model_metadata
 from data_harvesting.eval import eval as run_evaluation
 from data_harvesting.eval import load_policy_from_model_id
+from data_harvesting.eval import load_policy_from_uri
 
 
 _MODEL_COLUMNS = [
@@ -87,6 +94,16 @@ def _normalize_metric_names(
     return requested
 
 
+@dataclass
+class _RunMetadata:
+    run_id: str
+    run_name: str | None
+    experiment_id: str
+    status: str
+    params: dict[str, str]
+    metric_names: list[str]
+
+
 @dataclass(frozen=True)
 class RunModel:
     """A model logged by an :class:`ExperimentRun`."""
@@ -98,9 +115,12 @@ class RunModel:
     step: int | None
     step_inferred: bool
     creation_timestamp: int | None
+    local_path: Path | None = field(default=None, repr=False, compare=False)
 
     @cached_property
     def _loaded_policy(self):
+        if self.local_path is not None:
+            return load_policy_from_uri(self.local_path.as_uri())
         return load_policy_from_model_id(
             self.model_id,
             tracking_uri=self.run.tracking_uri,
@@ -150,13 +170,105 @@ class RunModel:
 class ExperimentRun:
     """Notebook-friendly access to one MLflow experiment run."""
 
-    def __init__(self, *, run, client: MlflowClient, tracking_uri: str) -> None:
-        self._run = run
+    def __init__(
+        self,
+        *,
+        run: Run | _RunMetadata,
+        client: MlflowClient | None,
+        tracking_uri: str | None,
+    ) -> None:
+        if isinstance(run, _RunMetadata):
+            self._metadata = run
+        else:
+            self._metadata = _RunMetadata(
+                run_id=run.info.run_id,
+                run_name=run.info.run_name,
+                experiment_id=run.info.experiment_id,
+                status=run.info.status,
+                params=dict(run.data.params),
+                metric_names=sorted(run.data.metrics),
+            )
         self._client = client
         self.tracking_uri = tracking_uri
         self._metric_history_cache: dict[str, tuple[Any, ...]] = {}
         self._models_cache: tuple[RunModel, ...] | None = None
-        self._config = _parse_logged_config(run.info.run_id, run.data.params)
+        self._config = _parse_logged_config(self.run_id, self._metadata.params)
+
+    def export(self, directory: str | Path) -> Path:
+        """Write this run's parameters, metric histories and native models to a new directory."""
+        target = Path(directory).resolve()
+        if target.exists():
+            raise FileExistsError(f"Export destination already exists: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=target.parent) as temp:
+            bundle = Path(temp) / "bundle"
+            bundle.mkdir()
+            with (bundle / "metrics.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("name", "step", "timestamp", "value"))
+                for name in self.metric_names:
+                    for point in self._metric_history(name):
+                        writer.writerow((name, point.step, point.timestamp, point.value))
+
+            models = []
+            for index, model in enumerate(self._models()):
+                relative = f"models/{index}"
+                destination = bundle / relative
+                if model.local_path is not None:
+                    shutil.copytree(model.local_path, destination)
+                else:
+                    assert self._client is not None
+                    artifact_uri = self._client.get_logged_model(model.model_id).artifact_location
+                    destination.mkdir(parents=True)
+                    downloaded = mlflow.artifacts.download_artifacts(
+                        artifact_uri=artifact_uri,
+                        tracking_uri=self.tracking_uri,
+                        dst_path=str(destination),
+                    )
+                    relative = Path(downloaded).resolve().relative_to(bundle).as_posix()
+                if not (bundle / relative / "MLmodel").is_file():
+                    raise ValueError(f"Missing MLmodel for {model.model_id}")
+                models.append({
+                    "name": model.name,
+                    "model_id": model.model_id,
+                    "kind": model.kind,
+                    "step": model.step,
+                    "step_inferred": model.step_inferred,
+                    "creation_timestamp": model.creation_timestamp,
+                    "path": relative,
+                })
+            manifest = {"version": 1, "run": asdict(self._metadata), "models": models}
+            (bundle / "run.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            bundle.rename(target)
+        return target
+
+    @classmethod
+    def from_directory(cls, directory: str | Path) -> ExperimentRun:
+        """Open an exported run without contacting a tracking server."""
+        root = Path(directory).resolve()
+        manifest = json.loads((root / "run.json").read_text(encoding="utf-8"))
+        if manifest.get("version") != 1:
+            raise ValueError(f"Unsupported run bundle version: {manifest.get('version')}")
+        run = cls(run=_RunMetadata(**manifest["run"]), client=None, tracking_uri=None)
+        histories = {name: [] for name in run.metric_names}
+        with (root / "metrics.csv").open(encoding="utf-8", newline="") as stream:
+            for row in csv.DictReader(stream):
+                name = row["name"]
+                histories[name].append(Metric(
+                    key=name,
+                    value=float(row["value"]),
+                    timestamp=int(row["timestamp"]),
+                    step=int(row["step"]),
+                ))
+        run._metric_history_cache = {name: tuple(points) for name, points in histories.items()}
+        models = []
+        for entry in manifest["models"]:
+            path = (root / entry.pop("path")).resolve()
+            if not path.is_relative_to(root) or not (path / "MLmodel").is_file():
+                raise ValueError(f"Invalid model directory for {entry['model_id']}: {path}")
+            models.append(RunModel(run=run, local_path=path, **entry))
+        run._models_cache = tuple(models)
+        return run
 
     @classmethod
     def from_id(
@@ -211,19 +323,19 @@ class ExperimentRun:
 
     @property
     def run_id(self) -> str:
-        return self._run.info.run_id
+        return self._metadata.run_id
 
     @property
     def run_name(self) -> str | None:
-        return self._run.info.run_name
+        return self._metadata.run_name
 
     @property
     def experiment_id(self) -> str:
-        return self._run.info.experiment_id
+        return self._metadata.experiment_id
 
     @property
     def status(self) -> str:
-        return self._run.info.status
+        return self._metadata.status
 
     @property
     def config(self) -> dict[str, Any]:
@@ -231,10 +343,11 @@ class ExperimentRun:
 
     @property
     def metric_names(self) -> tuple[str, ...]:
-        return tuple(sorted(self._run.data.metrics))
+        return tuple(self._metadata.metric_names)
 
     def _metric_history(self, name: str) -> tuple[Any, ...]:
         if name not in self._metric_history_cache:
+            assert self._client is not None
             self._metric_history_cache[name] = tuple(
                 self._client.get_metric_history(self.run_id, name)
             )
@@ -278,12 +391,19 @@ class ExperimentRun:
         if self._models_cache is not None:
             return self._models_cache
 
-        logged_models = list(
-            self._client.search_logged_models(
+        assert self._client is not None
+        logged_models = []
+        token = None
+        while True:
+            page = self._client.search_logged_models(
                 experiment_ids=[self.experiment_id],
                 filter_string=f"source_run_id = '{self.run_id}'",
+                page_token=token,
             )
-        )
+            logged_models.extend(page)
+            token = getattr(page, "token", None)
+            if not token:
+                break
         final_step = (
             self._latest_metric_step()
             if any(model.name == "policy_model" for model in logged_models)

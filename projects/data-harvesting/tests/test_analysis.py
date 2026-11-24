@@ -1,8 +1,10 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+import mlflow.pytorch
 import pandas as pd
 import pytest
+import torch
 
 from data_harvesting.analysis import ExperimentRun
 
@@ -278,3 +280,49 @@ def test_model_load_and_evaluation_return_episode_dataframe(monkeypatch) -> None
     assert table.loc[0, "avg_reward"] == 2.5
     assert run.config == original_config
     assert overrides == original_overrides
+
+
+def test_export_and_open_moved_run_offline(tmp_path, monkeypatch):
+    model_names = ["policy_checkpoint_step_100", "policy_model"]
+    models = [
+        SimpleNamespace(name=name, model_id=name, creation_timestamp=1000)
+        for name in model_names
+    ]
+    run = _analysis_run(
+        metrics={"eval/reward": 2.0, "empty": 0},
+        histories={"eval/reward": [
+            _point(step=100, timestamp=1, value=1.0),
+            _point(step=100, timestamp=2, value=2.0),
+        ]},
+        models=models,
+    )
+    inputs = torch.ones(1, 2)
+    outputs = {}
+    for index, name in enumerate(model_names):
+        model = torch.nn.Linear(2, 1)
+        with torch.no_grad():
+            model.weight.fill_(index + 1)
+            model.bias.zero_()
+        mlflow.pytorch.save_model(model, str(tmp_path / name), pip_requirements=[])
+        outputs[name] = model(inputs).detach()
+
+    def artifact(model_id):
+        return SimpleNamespace(artifact_location=(tmp_path / model_id).as_uri())
+
+    monkeypatch.setattr(run._client, "get_logged_model", artifact, raising=False)
+    bundle = run.export(tmp_path / "exported").rename(tmp_path / "relocated")
+    monkeypatch.setattr("data_harvesting.analysis.MlflowClient", lambda **kwargs: pytest.fail("tracking access"))
+    local = ExperimentRun.from_directory(bundle)
+    assert local.config == run.config
+    assert local.status == run.status
+    pd.testing.assert_frame_equal(local.models_with_metrics(), run.models_with_metrics())
+    pd.testing.assert_frame_equal(local.metrics(), run.metrics())
+    for model in [local.final_model(), local.checkpoint(100)]:
+        torch.testing.assert_close(model.load()(inputs), outputs[model.name])
+    monkeypatch.setattr("data_harvesting.analysis.run_evaluation",
+                        lambda *args, **kwargs: {"episodes": [{"run_index": 0}]})
+    row = local.final_model().evaluate(1, seed=42).iloc[0]
+    assert row["source_run_id"] == run.run_id
+    assert row["model_id"] == "policy_model"
+    with pytest.raises(FileExistsError):
+        run.export(bundle)
